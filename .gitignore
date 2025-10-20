@@ -1,0 +1,25 @@
+# Environment variables
+.env
+
+# Temporary files
+tmp/
+
+# Submodule - managed separately
+co2mon/
+
+# Build artifacts
+*.o
+*.a
+
+# Logs
+*.log
+
+# macOS
+.DS_Store
+
+# LaunchDaemon plists with personal paths
+*.plist
+
+# IDE
+.vscode/
+.idea/
