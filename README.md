@@ -1,7 +1,7 @@
 # CO2 Monitor — Raspberry Pi 4B + Docker
 
 Мониторинг CO2 датчика **Holtek USB-zyTemp (04d9:a052)** на Raspberry Pi 4B.
-Данные публикуются в **MQTT** или **Prometheus Pushgateway**.
+Данные публикуются в **Prometheus Pushgateway** (основной) или **MQTT**.
 
 ## Архитектура
 
@@ -12,33 +12,32 @@ CO2 датчик (USB)
 ┌─────────────────────────────────────────────┐
 │  Raspberry Pi 4B                            │
 │                                             │
-│  ┌──────────────┐    internal Docker net    │
+│  ┌──────────────┐   Docker internal net     │
 │  │   co2mond    │ ──────────────────────►   │
-│  │  :9999/metrics│                          │
-│  └──────────────┘    ┌──────────────────┐   │
-│        ▲  USB        │    co2push       │   │
-│        │             │  (MQTT / Push-   │   │
-│  /dev/bus/usb        │   gateway)       │   │
-│                      └──────────────────┘   │
+│  │ :9999/metrics│    ┌──────────────────┐   │
+│  └──────────────┘    │    co2push       │   │
+│        ▲  USB        │  (Pushgateway /  │   │
+│        │             │     MQTT)        │   │
+│  /dev/bus/usb        └──────────────────┘   │
 └─────────────────────────────────────────────┘
          │                      │
          ▼                      ▼
-   [prometheus:9090]      [mqtt broker]
-   [pushgateway:9091]     [grafana:3000]
+  [pushgateway.artfaal.ru]  [mqtt broker]
+  [prometheus → grafana]
 ```
 
 ## Требования
 
 - Raspberry Pi 4B (aarch64) с Raspberry Pi OS / Debian
 - Docker ≥ 20.10, Docker Compose ≥ v2
-- CO2 датчик Holtek USB-zyTemp (04d9:a052)
-- Удалённый MQTT брокер или Prometheus Pushgateway
+- CO2 датчик Holtek USB-zyTemp (04d9:a052) — **data кабель** (не зарядный!)
+- Prometheus Pushgateway или MQTT брокер
 
 ## Быстрый старт
 
 ```bash
 # 1. Клонировать репозиторий вместе с submodule
-git clone --recurse-submodules https://github.com/YOUR_USER/dadjet_co2.git
+git clone --recurse-submodules https://github.com/artfaal/dadjet_co2.git
 cd dadjet_co2
 
 # 2. Создать .env и настроить
@@ -52,6 +51,9 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 # 4. Собрать образы и запустить
 docker compose build
 docker compose up -d
+
+# 5. Проверить
+docker compose logs -f
 ```
 
 ## Установка подробно
@@ -67,7 +69,7 @@ newgrp docker
 ### 2. Клонирование репозитория
 
 ```bash
-git clone --recurse-submodules https://github.com/YOUR_USER/dadjet_co2.git ~/dadjet_co2
+git clone --recurse-submodules https://github.com/artfaal/dadjet_co2.git ~/dadjet_co2
 cd ~/dadjet_co2
 ```
 
@@ -86,37 +88,31 @@ cp .env.example .env
 nano .env
 ```
 
-Обязательные параметры:
-
 ```env
-# --- MQTT ---
+# --- Prometheus Pushgateway ---
+PUSHGATEWAY_URL=https://pushgateway.example.com
+JOB_NAME=co2monitor
+INSTANCE_NAME=home
+
+# --- MQTT (опционально) ---
 MQTT_HOST=mqtt.example.com
 MQTT_PORT=1883
 MQTT_USER=your_username
 MQTT_PASS=your_password
 MQTT_TOPIC_PREFIX=home/sensors/co2monitor
 
-# --- Prometheus Pushgateway (если используете) ---
-PUSHGATEWAY_URL=https://pushgateway.example.com
-JOB_NAME=co2monitor
-INSTANCE_NAME=home
-
-# LOCAL_METRICS_URL переопределяется в docker-compose.yml автоматически
+# Push interval in seconds
+PUSH_INTERVAL=30
 ```
 
 ### 4. udev rules для USB-датчика
 
-Нужно сделать **один раз на хосте**, чтобы Docker-контейнер мог обращаться к USB HID:
+Нужно сделать **один раз на хосте**, чтобы Docker-контейнер имел доступ к USB HID:
 
 ```bash
 sudo cp co2mon/udevrules/99-co2mon.rules /etc/udev/rules.d/
 sudo udevadm control --reload-rules
 sudo udevadm trigger
-```
-
-Правило разрешает доступ к устройству `04d9:a052` без root:
-```
-SUBSYSTEM=="usb", ATTR{idVendor}=="04d9", ATTR{idProduct}=="a052", MODE="0666"
 ```
 
 После подключения датчика убедитесь, что он виден:
@@ -125,16 +121,14 @@ lsusb | grep 04d9
 # Bus 001 Device 003: ID 04d9:a052 Holtek Semiconductor, Inc. USB-zyTemp
 ```
 
+> **Важно:** используйте data-кабель (не кабель только для зарядки).
+> При подключении кабеля-зарядки датчик светится, но в `lsusb` не появляется.
+
 ### 5. Сборка и запуск
 
 ```bash
-# Собрать оба образа (co2mond + co2push)
 docker compose build
-
-# Запустить в фоне
 docker compose up -d
-
-# Проверить логи
 docker compose logs -f
 ```
 
@@ -144,38 +138,19 @@ docker compose logs -f
 
 | Образ | Содержимое | Размер |
 |-------|-----------|--------|
-| `dadjet-co2mond` | `co2mond` + `hidapi` + `libusb` | ~12 MB |
-| `dadjet-co2push` | `bash` + `curl` + `mosquitto_pub` | ~18 MB |
+| `dadjet-co2mond` | `co2mond` + `hidapi` + `libusb` | ~14 MB |
+| `dadjet-co2push` | `bash` + `curl` + `mosquitto_pub` | ~26 MB |
 
-Сборка `co2mond` происходит из исходников внутри multi-stage Dockerfile.
+Сборка `co2mond` происходит из исходников (multi-stage Dockerfile). Логи ограничены
+5 MB на файл, 3 файла ротации.
 
 ## Выбор метода публикации
 
-По умолчанию запускается **MQTT**-публикатор (`push_co2_mqtt.sh`).
+По умолчанию запускается **Pushgateway**-публикатор (`push_co2_data.sh`).
 
-Для переключения на **Prometheus Pushgateway** раскомментируйте в `docker-compose.yml`:
+Для переключения на **MQTT** — изменить в `docker-compose.yml`:
 ```yaml
-co2push:
-  # ...
-  command: ["/app/push_co2_data.sh"]
-```
-
-Для одновременной публикации в MQTT **и** Pushgateway — добавьте второй сервис:
-```yaml
-  co2push-prometheus:
-    build:
-      context: .
-      target: co2push
-    container_name: co2push-prometheus
-    restart: unless-stopped
-    depends_on:
-      - co2mond
-    env_file: .env
-    environment:
-      LOCAL_METRICS_URL: http://co2mond:9999/metrics
-    command: ["/app/push_co2_data.sh"]
-    networks:
-      - co2net
+    command: ["/app/push_co2_mqtt.sh"]
 ```
 
 ## Управление
@@ -187,8 +162,9 @@ docker compose ps
 # Логи в реальном времени
 docker compose logs -f
 
-# Логи только co2mond
+# Только co2mond или co2push
 docker compose logs -f co2mond
+docker compose logs -f co2push
 
 # Перезапуск
 docker compose restart
@@ -196,10 +172,7 @@ docker compose restart
 # Остановить
 docker compose down
 
-# Остановить и удалить образы
-docker compose down --rmi local
-
-# Пересобрать и перезапустить
+# Пересобрать и перезапустить (после изменений)
 docker compose up -d --build
 ```
 
@@ -207,11 +180,10 @@ docker compose up -d --build
 
 ```bash
 # Метрики с датчика (внутри RPi)
-curl http://localhost:9999/metrics
+curl http://localhost:9999/metrics   # работает только если co2mond слушает на хосту
 
-# Подписаться на MQTT-топики
-mosquitto_sub -h mqtt.example.com -u user -P pass \
-  -t "home/sensors/co2monitor/#" -v
+# Из co2push контейнера (правильный способ)
+docker exec co2push curl -s http://co2mond:9999/metrics
 
 # Проверить Pushgateway
 curl https://pushgateway.example.com/metrics | grep co2
@@ -219,12 +191,17 @@ curl https://pushgateway.example.com/metrics | grep co2
 
 Ожидаемый вывод `/metrics`:
 ```
-# HELP co2mon_co2_ppm CO2 concentration
 # TYPE co2mon_co2_ppm gauge
-co2mon_co2_ppm 520
-# HELP co2mon_temp_celsius Ambient temperature
+co2mon_co2_ppm 831
 # TYPE co2mon_temp_celsius gauge
-co2mon_temp_celsius 23.4375
+co2mon_temp_celsius 24.725
+```
+
+Ожидаемые логи при нормальной работе:
+```
+co2mond  | Tamb    24.7250
+co2mond  | CntR    831
+co2push  | [2026-02-22 10:51:00] SUCCESS: CO2=831 ppm, Temp=24.7250°C
 ```
 
 ## Настройка сервера (Docker Compose)
@@ -293,86 +270,59 @@ volumes:
 
 ## Устранение неполадок
 
-### Датчик не найден в контейнере
+### Датчик не виден в lsusb
 
 ```bash
-# Убедитесь, что датчик виден на хосте
 lsusb | grep 04d9
-
-# Проверьте udev rules
-ls -la /etc/udev/rules.d/99-co2mon.rules
-
-# Проверьте логи co2mond
-docker compose logs co2mond
 ```
 
-### Нет данных в метриках
+- Проверьте, что используется **data-кабель**, а не кабель только для зарядки
+- Попробуйте другой USB-порт на RPi (RPi 4 имеет 2x USB2 и 2x USB3)
+- Переподключите датчик после установки udev rules
 
+### co2mond: `hid_open: error`
+
+Нормально до подключения датчика. После подключения — перезапустите контейнер:
 ```bash
-# Проверьте что co2mond запущен
-docker compose ps
-
-# Попробуйте вручную внутри контейнера
-docker exec -it co2mond co2mond -P 0.0.0.0:9999
+docker compose restart co2mond
 ```
 
-### Ошибка подключения к MQTT
+### co2push: `WARNING: No metrics found`
+
+co2mond запущен, но датчик ещё не прочитал данные (первые ~10 секунд после подключения).
+Если предупреждение продолжается — проверьте логи co2mond.
+
+### Данные не доходят до Pushgateway
 
 ```bash
+# Проверьте доступность
+curl -s -o /dev/null -w "%{http_code}" https://pushgateway.example.com/metrics
+
 # Проверьте .env
-cat .env | grep MQTT
-
-# Тест mosquitto_pub вручную внутри контейнера
-docker exec -it co2push mosquitto_pub \
-  -h "$MQTT_HOST" -p "$MQTT_PORT" \
-  -u "$MQTT_USER" -P "$MQTT_PASS" \
-  -t "test/co2" -m "hello"
+cat .env | grep PUSHGATEWAY
 ```
-
-### Проблема с USB-доступом (permission denied)
-
-```bash
-# Убедитесь, что co2mond запущен с privileged: true
-docker inspect co2mond | grep -i privileged
-
-# Переустановите udev rules
-sudo cp co2mon/udevrules/99-co2mon.rules /etc/udev/rules.d/
-sudo udevadm control --reload-rules && sudo udevadm trigger
-# Переподключите датчик
-```
-
-## Миграция с macOS
-
-1. Остановить сервисы на Mac-сервере:
-   ```bash
-   # На Mac
-   sudo launchctl stop com.co2mon
-   sudo launchctl stop com.co2push
-   ```
-2. Перенести датчик в USB порт Raspberry Pi
-3. Убедиться что датчик виден: `lsusb | grep 04d9`
-4. Запустить контейнеры: `docker compose up -d`
 
 ## Файлы проекта
 
 ```
 dadjet_co2/
 ├── Dockerfile               # Multi-stage Alpine: co2mond + co2push
-├── docker-compose.yml       # Оркестрация сервисов
+├── docker-compose.yml       # Оркестрация сервисов + лог-ротация
 ├── .env.example             # Шаблон конфигурации
-├── push_co2_data.sh         # Публикатор → Prometheus Pushgateway
+├── push_co2_data.sh         # Публикатор → Prometheus Pushgateway (дефолт)
 ├── push_co2_mqtt.sh         # Публикатор → MQTT broker
 ├── co2mon/                  # Git submodule (github.com/dmage/co2mon)
 │   ├── co2mond/             # Daemon: считывает USB HID, экспортирует метрики
-│   ├── libco2mon/           # Библиотека: HID-протокол датчика
-│   └── udevrules/           # Правила udev для USB-устройства
+│   ├── libco2mon/           # Библиотека: HID-протокол датчика Holtek
+│   └── udevrules/           # udev rules для USB-устройства (04d9:a052)
 └── README.md                # Эта инструкция
 ```
 
 ## Безопасность
 
 - Файл `.env` с секретами исключён из git через `.gitignore`
+- `co2push` запускается с `no-new-privileges`
+- `privileged: true` для `co2mond` нужен для USB HID доступа — при желании
+  можно заменить на точечный `devices` mount после настройки udev rules
 - Используйте HTTPS для Pushgateway
-- Настройте аутентификацию для MQTT брокера
-- `privileged: true` в Docker нужен только для USB HID — при возможности
-  замените на точечный `devices` mount после настройки udev rules
+- Контейнеры изолированы во внутренней сети `co2net`, порты наружу не проброшены

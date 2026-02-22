@@ -11,18 +11,23 @@ services:
     image: dadjet-co2mond:latest
     container_name: co2mond
     restart: unless-stopped
-    # Privileged нужен для доступа к USB HID устройству из контейнера.
-    # Альтернатива (менее привилегированная) — закомментировать privileged
-    # и раскомментировать devices ниже + настроить udev rules на хосте.
+    # privileged нужен для доступа к USB HID устройству из контейнера.
+    # Менее привилегированная альтернатива: убрать privileged и раскомментировать
+    # devices + настроить udev rules на хосте (см. README).
     privileged: true
     # devices:
     #   - /dev/bus/usb:/dev/bus/usb
     networks:
       - co2net
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
 
   # ──────────────────────────────────────────────────────────────────────────
-  # co2push — публикация данных в MQTT или Prometheus Pushgateway
-  # По умолчанию: MQTT. Для Pushgateway — переопределить command ниже.
+  # co2push — публикация данных в Prometheus Pushgateway или MQTT
+  # По умолчанию: Pushgateway. Для MQTT — поменять command ниже.
   # ──────────────────────────────────────────────────────────────────────────
   co2push:
     build:
@@ -42,9 +47,16 @@ services:
       - ./.env:/app/.env:ro
     networks:
       - co2net
+    security_opt:
+      - no-new-privileges:true
     command: ["/app/push_co2_data.sh"]
-    # Для MQTT раскомментировать и убрать строку выше:
+    # Для MQTT — заменить command выше на:
     # command: ["/app/push_co2_mqtt.sh"]
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
 
 networks:
   co2net:
