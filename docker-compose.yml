@@ -42,8 +42,9 @@ services:
       - ./.env:/app/.env:ro
     networks:
       - co2net
-    # Для Pushgateway вместо MQTT раскомментировать:
-    # command: ["/app/push_co2_data.sh"]
+    command: ["/app/push_co2_data.sh"]
+    # Для MQTT раскомментировать и убрать строку выше:
+    # command: ["/app/push_co2_mqtt.sh"]
 
 networks:
   co2net:
