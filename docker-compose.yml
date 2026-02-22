@@ -37,6 +37,9 @@ services:
     environment:
       # Перекрываем LOCAL_METRICS_URL: внутри Docker-сети используем имя сервиса
       LOCAL_METRICS_URL: http://co2mond:9999/metrics
+    volumes:
+      # Скрипты ищут .env файл через source — монтируем его в контейнер
+      - ./.env:/app/.env:ro
     networks:
       - co2net
     # Для Pushgateway вместо MQTT раскомментировать:
