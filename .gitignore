@@ -4,9 +4,6 @@
 # Temporary files
 tmp/
 
-# Submodule - managed separately
-co2mon/
-
 # Build artifacts
 *.o
 *.a

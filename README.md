@@ -1,150 +1,237 @@
-# CO2 Monitor для macOS с отправкой в Prometheus и MQTT
+# CO2 Monitor — Raspberry Pi 4B + Docker
 
-Мониторинг CO2 датчика (Holtek 04d9:a052) на macOS с автоматической отправкой данных в Prometheus Pushgateway или MQTT broker.
+Мониторинг CO2 датчика **Holtek USB-zyTemp (04d9:a052)** на Raspberry Pi 4B.
+Данные публикуются в **MQTT** или **Prometheus Pushgateway**.
+
+## Архитектура
+
+```
+CO2 датчик (USB)
+      │
+      ▼
+┌─────────────────────────────────────────────┐
+│  Raspberry Pi 4B                            │
+│                                             │
+│  ┌──────────────┐    internal Docker net    │
+│  │   co2mond    │ ──────────────────────►   │
+│  │  :9999/metrics│                          │
+│  └──────────────┘    ┌──────────────────┐   │
+│        ▲  USB        │    co2push       │   │
+│        │             │  (MQTT / Push-   │   │
+│  /dev/bus/usb        │   gateway)       │   │
+│                      └──────────────────┘   │
+└─────────────────────────────────────────────┘
+         │                      │
+         ▼                      ▼
+   [prometheus:9090]      [mqtt broker]
+   [pushgateway:9091]     [grafana:3000]
+```
 
 ## Требования
 
-- macOS с Homebrew
-- CO2 датчик (Holtek USB-zyTemp)
-- Удаленный сервер с Docker для Prometheus/Grafana
+- Raspberry Pi 4B (aarch64) с Raspberry Pi OS / Debian
+- Docker ≥ 20.10, Docker Compose ≥ v2
+- CO2 датчик Holtek USB-zyTemp (04d9:a052)
+- Удалённый MQTT брокер или Prometheus Pushgateway
 
-## Установка
-
-### 1. Установите зависимости
-
-```bash
-brew install cmake pkg-config hidapi
-```
-
-### 2. Скомпилируйте co2mon
+## Быстрый старт
 
 ```bash
-cd /path/to/co2mon
+# 1. Клонировать репозиторий вместе с submodule
+git clone --recurse-submodules https://github.com/YOUR_USER/dadjet_co2.git
+cd dadjet_co2
 
-# Исправьте версию CMake во всех файлах
-find . -name "CMakeLists.txt" -exec sed -i '' 's/cmake_minimum_required(VERSION 2.8)/cmake_minimum_required(VERSION 3.5)/g' {} \;
+# 2. Создать .env и настроить
+cp .env.example .env
+nano .env
 
-# Соберите проект
-mkdir build
-cd build
-cmake ..
-make
+# 3. Установить udev rules для датчика (один раз)
+sudo cp co2mon/udevrules/99-co2mon.rules /etc/udev/rules.d/
+sudo udevadm control --reload-rules && sudo udevadm trigger
+
+# 4. Собрать образы и запустить
+docker compose build
+docker compose up -d
 ```
 
-### 3. Проверьте работу
+## Установка подробно
+
+### 1. Docker (если не установлен)
 
 ```bash
-# Подключите датчик к USB
-# Запустите для проверки:
-sudo ./co2mond/co2mond
-
-# Должны появиться строки вида:
-# Tamb    24.2250
-# CntR    470
+curl -fsSL https://get.docker.com | sh
+sudo usermod -aG docker $USER
+newgrp docker
 ```
 
-### 4. Установите автозапуск через launchd
-
-Создайте файл `/Library/LaunchDaemons/com.co2mon.plist`:
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.co2mon</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/Users/YOUR_USERNAME/PROJECTS/co2mon/build/co2mond/co2mond</string>
-        <string>-P</string>
-        <string>127.0.0.1:9999</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>StandardOutPath</key>
-    <string>/tmp/co2mon.log</string>
-    <key>StandardErrorPath</key>
-    <string>/tmp/co2mon.err</string>
-</dict>
-</plist>
-```
-
-**Замените YOUR_USERNAME на ваше имя пользователя!**
-
-Запустите сервис:
+### 2. Клонирование репозитория
 
 ```bash
-sudo launchctl load /Library/LaunchDaemons/com.co2mon.plist
-sudo launchctl start com.co2mon
-
-# Проверка работы
-curl http://localhost:9999/metrics
+git clone --recurse-submodules https://github.com/YOUR_USER/dadjet_co2.git ~/dadjet_co2
+cd ~/dadjet_co2
 ```
 
-### 5. Настройте переменные окружения
+> Флаг `--recurse-submodules` автоматически клонирует `co2mon/` из
+> [github.com/dmage/co2mon](https://github.com/dmage/co2mon).
 
-Создайте `.env` файл из примера и настройте под себя:
+Если репозиторий уже склонирован без submodule:
+```bash
+git submodule update --init --recursive
+```
+
+### 3. Настройка переменных окружения
 
 ```bash
 cp .env.example .env
 nano .env
 ```
 
-Укажите ваши настройки:
-- `PUSHGATEWAY_URL` - адрес вашего Prometheus Pushgateway
-- `MQTT_HOST`, `MQTT_USER`, `MQTT_PASS` - настройки MQTT брокера (если используете)
-- Другие параметры по необходимости
+Обязательные параметры:
 
-### 6. Выберите и настройте скрипт отправки данных
+```env
+# --- MQTT ---
+MQTT_HOST=mqtt.example.com
+MQTT_PORT=1883
+MQTT_USER=your_username
+MQTT_PASS=your_password
+MQTT_TOPIC_PREFIX=home/sensors/co2monitor
 
-Доступны два варианта:
-- `push_co2_data.sh` - отправка в Prometheus Pushgateway
-- `push_co2_mqtt.sh` - отправка в MQTT с округлением значений (CO2 до целого, температура до 1 знака)
+# --- Prometheus Pushgateway (если используете) ---
+PUSHGATEWAY_URL=https://pushgateway.example.com
+JOB_NAME=co2monitor
+INSTANCE_NAME=home
 
-Выберите нужный скрипт и установите автозапуск. Создайте файл `/Library/LaunchDaemons/com.co2push.plist`:
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.co2push</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/Users/YOUR_USERNAME/PROJECTS/dadjet_co2/push_co2_data.sh</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>StandardOutPath</key>
-    <string>/tmp/co2push.log</string>
-    <key>StandardErrorPath</key>
-    <string>/tmp/co2push.err</string>
-</dict>
-</plist>
+# LOCAL_METRICS_URL переопределяется в docker-compose.yml автоматически
 ```
 
-Запустите:
+### 4. udev rules для USB-датчика
+
+Нужно сделать **один раз на хосте**, чтобы Docker-контейнер мог обращаться к USB HID:
 
 ```bash
-sudo launchctl load /Library/LaunchDaemons/com.co2push.plist
-sudo launchctl start com.co2push
+sudo cp co2mon/udevrules/99-co2mon.rules /etc/udev/rules.d/
+sudo udevadm control --reload-rules
+sudo udevadm trigger
 ```
 
-## Настройка сервера (Docker)
+Правило разрешает доступ к устройству `04d9:a052` без root:
+```
+SUBSYSTEM=="usb", ATTR{idVendor}=="04d9", ATTR{idProduct}=="a052", MODE="0666"
+```
 
-### Вариант 1: Prometheus + Pushgateway
+После подключения датчика убедитесь, что он виден:
+```bash
+lsusb | grep 04d9
+# Bus 001 Device 003: ID 04d9:a052 Holtek Semiconductor, Inc. USB-zyTemp
+```
 
-На вашем сервере создайте `docker-compose.yml`:
+### 5. Сборка и запуск
+
+```bash
+# Собрать оба образа (co2mond + co2push)
+docker compose build
+
+# Запустить в фоне
+docker compose up -d
+
+# Проверить логи
+docker compose logs -f
+```
+
+## Образы Docker
+
+Оба образа построены на **Alpine Linux 3.21** — минимальный размер:
+
+| Образ | Содержимое | Размер |
+|-------|-----------|--------|
+| `dadjet-co2mond` | `co2mond` + `hidapi` + `libusb` | ~12 MB |
+| `dadjet-co2push` | `bash` + `curl` + `mosquitto_pub` | ~18 MB |
+
+Сборка `co2mond` происходит из исходников внутри multi-stage Dockerfile.
+
+## Выбор метода публикации
+
+По умолчанию запускается **MQTT**-публикатор (`push_co2_mqtt.sh`).
+
+Для переключения на **Prometheus Pushgateway** раскомментируйте в `docker-compose.yml`:
+```yaml
+co2push:
+  # ...
+  command: ["/app/push_co2_data.sh"]
+```
+
+Для одновременной публикации в MQTT **и** Pushgateway — добавьте второй сервис:
+```yaml
+  co2push-prometheus:
+    build:
+      context: .
+      target: co2push
+    container_name: co2push-prometheus
+    restart: unless-stopped
+    depends_on:
+      - co2mond
+    env_file: .env
+    environment:
+      LOCAL_METRICS_URL: http://co2mond:9999/metrics
+    command: ["/app/push_co2_data.sh"]
+    networks:
+      - co2net
+```
+
+## Управление
+
+```bash
+# Статус контейнеров
+docker compose ps
+
+# Логи в реальном времени
+docker compose logs -f
+
+# Логи только co2mond
+docker compose logs -f co2mond
+
+# Перезапуск
+docker compose restart
+
+# Остановить
+docker compose down
+
+# Остановить и удалить образы
+docker compose down --rmi local
+
+# Пересобрать и перезапустить
+docker compose up -d --build
+```
+
+## Проверка работы
+
+```bash
+# Метрики с датчика (внутри RPi)
+curl http://localhost:9999/metrics
+
+# Подписаться на MQTT-топики
+mosquitto_sub -h mqtt.example.com -u user -P pass \
+  -t "home/sensors/co2monitor/#" -v
+
+# Проверить Pushgateway
+curl https://pushgateway.example.com/metrics | grep co2
+```
+
+Ожидаемый вывод `/metrics`:
+```
+# HELP co2mon_co2_ppm CO2 concentration
+# TYPE co2mon_co2_ppm gauge
+co2mon_co2_ppm 520
+# HELP co2mon_temp_celsius Ambient temperature
+# TYPE co2mon_temp_celsius gauge
+co2mon_temp_celsius 23.4375
+```
+
+## Настройка сервера (Docker Compose)
+
+### Prometheus + Pushgateway
 
 ```yaml
-version: '3'
-
 services:
   pushgateway:
     image: prom/pushgateway
@@ -174,31 +261,21 @@ networks:
   monitoring:
 ```
 
-Создайте `prometheus.yml`:
-
+`prometheus.yml`:
 ```yaml
 global:
   scrape_interval: 15s
-  evaluation_interval: 15s
 
 scrape_configs:
-  - job_name: 'pushgateway'
+  - job_name: pushgateway
     honor_labels: true
     static_configs:
       - targets: ['pushgateway:9091']
 ```
 
-Запустите:
-
-```bash
-docker-compose up -d
-```
-
-### Вариант 2: MQTT Broker
+### MQTT Broker (Mosquitto)
 
 ```yaml
-version: '3'
-
 services:
   mosquitto:
     image: eclipse-mosquitto
@@ -206,109 +283,96 @@ services:
     restart: unless-stopped
     ports:
       - "1883:1883"
-      - "9001:9001"
     volumes:
       - ./mosquitto.conf:/mosquitto/config/mosquitto.conf
       - mosquitto-data:/mosquitto/data
-      - mosquitto-logs:/mosquitto/log
 
 volumes:
   mosquitto-data:
-  mosquitto-logs:
-```
-
-## Настройка Grafana
-
-1. Добавьте Data Source:
-   - **Для Prometheus**: Type: Prometheus, URL: http://prometheus:9090
-   - **Для MQTT**: установите плагин MQTT и укажите адрес брокера
-2. Создайте дашборд с метриками:
-   - `co2_ppm` - уровень CO2
-   - `temperature` - температура
-
-## Проверка работы
-
-```bash
-# На Mac проверьте логи
-tail -f /tmp/co2mon.log
-tail -f /tmp/co2push.log
-
-# Проверьте метрики локально
-curl http://localhost:9999/metrics
-
-# Проверьте что данные доходят до Pushgateway
-curl https://your-pushgateway-url/metrics | grep co2
-
-# Для MQTT подпишитесь на топики
-mosquitto_sub -h your-mqtt-host -t "home/sensors/co2monitor/#"
-```
-
-## Управление сервисами
-
-```bash
-# Остановить co2mon
-sudo launchctl stop com.co2mon
-
-# Запустить co2mon
-sudo launchctl start com.co2mon
-
-# Удалить из автозапуска
-sudo launchctl unload /Library/LaunchDaemons/com.co2mon.plist
-
-# Перезапустить после изменений
-sudo launchctl unload /Library/LaunchDaemons/com.co2mon.plist
-sudo launchctl load /Library/LaunchDaemons/com.co2mon.plist
 ```
 
 ## Устранение неполадок
 
-### Устройство не открывается
+### Датчик не найден в контейнере
 
-1. Отключите и подключите датчик заново
-2. Проверьте что устройство видно: `system_profiler SPUSBDataType | grep 04d9`
-3. Перезапустите сервис
+```bash
+# Убедитесь, что датчик виден на хосте
+lsusb | grep 04d9
 
-### Данные не отправляются на сервер
+# Проверьте udev rules
+ls -la /etc/udev/rules.d/99-co2mon.rules
 
-1. Проверьте логи: `tail -f /tmp/co2push.log`
-2. Проверьте `.env` файл и его настройки
-3. Проверьте доступность сервера
-4. Убедитесь что скрипт запущен: `ps aux | grep push_co2`
+# Проверьте логи co2mond
+docker compose logs co2mond
+```
 
-### После перезагрузки не запускается
+### Нет данных в метриках
 
-1. Проверьте что сервисы загружены:
+```bash
+# Проверьте что co2mond запущен
+docker compose ps
+
+# Попробуйте вручную внутри контейнера
+docker exec -it co2mond co2mond -P 0.0.0.0:9999
+```
+
+### Ошибка подключения к MQTT
+
+```bash
+# Проверьте .env
+cat .env | grep MQTT
+
+# Тест mosquitto_pub вручную внутри контейнера
+docker exec -it co2push mosquitto_pub \
+  -h "$MQTT_HOST" -p "$MQTT_PORT" \
+  -u "$MQTT_USER" -P "$MQTT_PASS" \
+  -t "test/co2" -m "hello"
+```
+
+### Проблема с USB-доступом (permission denied)
+
+```bash
+# Убедитесь, что co2mond запущен с privileged: true
+docker inspect co2mond | grep -i privileged
+
+# Переустановите udev rules
+sudo cp co2mon/udevrules/99-co2mon.rules /etc/udev/rules.d/
+sudo udevadm control --reload-rules && sudo udevadm trigger
+# Переподключите датчик
+```
+
+## Миграция с macOS
+
+1. Остановить сервисы на Mac-сервере:
    ```bash
-   sudo launchctl list | grep co2
+   # На Mac
+   sudo launchctl stop com.co2mon
+   sudo launchctl stop com.co2push
    ```
-2. Проверьте права на файлы:
-   ```bash
-   ls -la /Library/LaunchDaemons/com.co2*.plist
-   ```
-
-## Безопасность
-
-- Файл `.env` с приватными данными исключен из git через `.gitignore`
-- Используйте HTTPS для Pushgateway
-- Настройте аутентификацию для MQTT брокера
-- Не коммитьте `.env` файл в репозиторий
+2. Перенести датчик в USB порт Raspberry Pi
+3. Убедиться что датчик виден: `lsusb | grep 04d9`
+4. Запустить контейнеры: `docker compose up -d`
 
 ## Файлы проекта
 
 ```
 dadjet_co2/
-├── README.md                      # Эта инструкция
-├── .gitignore                    # Исключения для git
-├── .env.example                  # Пример конфигурации
-├── push_co2_data.sh              # Скрипт отправки в Prometheus Pushgateway
-└── push_co2_mqtt.sh              # Скрипт отправки в MQTT broker
+├── Dockerfile               # Multi-stage Alpine: co2mond + co2push
+├── docker-compose.yml       # Оркестрация сервисов
+├── .env.example             # Шаблон конфигурации
+├── push_co2_data.sh         # Публикатор → Prometheus Pushgateway
+├── push_co2_mqtt.sh         # Публикатор → MQTT broker
+├── co2mon/                  # Git submodule (github.com/dmage/co2mon)
+│   ├── co2mond/             # Daemon: считывает USB HID, экспортирует метрики
+│   ├── libco2mon/           # Библиотека: HID-протокол датчика
+│   └── udevrules/           # Правила udev для USB-устройства
+└── README.md                # Эта инструкция
 ```
 
-**Примечание**: Директория `co2mon/` исключена из репозитория (.gitignore), так как это отдельный git submodule.
+## Безопасность
 
-## Первый запуск
-
-1. Склонируйте репозиторий
-2. Создайте `.env` из `.env.example` и настройте его
-3. Следуйте инструкциям по установке выше
-4. Не забудьте добавить `.env` в `.gitignore` (уже сделано)
+- Файл `.env` с секретами исключён из git через `.gitignore`
+- Используйте HTTPS для Pushgateway
+- Настройте аутентификацию для MQTT брокера
+- `privileged: true` в Docker нужен только для USB HID — при возможности
+  замените на точечный `devices` mount после настройки udev rules

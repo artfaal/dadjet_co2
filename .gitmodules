@@ -1,0 +1,3 @@
+[submodule "co2mon"]
+	path = co2mon
+	url = https://github.com/dmage/co2mon.git

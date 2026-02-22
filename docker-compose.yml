@@ -1,0 +1,47 @@
+services:
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # co2mond — демон считывания данных с USB-датчика CO2 (Holtek 04d9:a052)
+  # Экспортирует Prometheus-метрики на :9999/metrics
+  # ──────────────────────────────────────────────────────────────────────────
+  co2mond:
+    build:
+      context: .
+      target: co2mond
+    image: dadjet-co2mond:latest
+    container_name: co2mond
+    restart: unless-stopped
+    # Privileged нужен для доступа к USB HID устройству из контейнера.
+    # Альтернатива (менее привилегированная) — закомментировать privileged
+    # и раскомментировать devices ниже + настроить udev rules на хосте.
+    privileged: true
+    # devices:
+    #   - /dev/bus/usb:/dev/bus/usb
+    networks:
+      - co2net
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # co2push — публикация данных в MQTT или Prometheus Pushgateway
+  # По умолчанию: MQTT. Для Pushgateway — переопределить command ниже.
+  # ──────────────────────────────────────────────────────────────────────────
+  co2push:
+    build:
+      context: .
+      target: co2push
+    image: dadjet-co2push:latest
+    container_name: co2push
+    restart: unless-stopped
+    depends_on:
+      - co2mond
+    env_file: .env
+    environment:
+      # Перекрываем LOCAL_METRICS_URL: внутри Docker-сети используем имя сервиса
+      LOCAL_METRICS_URL: http://co2mond:9999/metrics
+    networks:
+      - co2net
+    # Для Pushgateway вместо MQTT раскомментировать:
+    # command: ["/app/push_co2_data.sh"]
+
+networks:
+  co2net:
+    driver: bridge
