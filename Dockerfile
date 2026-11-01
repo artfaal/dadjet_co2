@@ -2,7 +2,7 @@
 # Stage 1: build co2mond
 #   Alpine + build tools → компилируем C-демон из исходников
 # ─────────────────────────────────────────────────────────────────────────────
-FROM alpine:3.21 AS builder
+FROM alpine:3.24.3@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a AS builder
 
 RUN apk add --no-cache \
     build-base \
@@ -27,7 +27,7 @@ RUN mkdir build && cd build && \
 #   Только исполняемый файл + runtime-библиотеки hidapi/libusb
 #   Итоговый размер образа ≈ 10–15 MB
 # ─────────────────────────────────────────────────────────────────────────────
-FROM alpine:3.21 AS co2mond
+FROM alpine:3.24.3@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a AS co2mond
 
 RUN apk add --no-cache hidapi libusb
 
@@ -42,7 +42,7 @@ CMD ["co2mond", "-P", "0.0.0.0:9999"]
 #   Alpine + bash + curl + mosquitto_pub
 #   Итоговый размер образа ≈ 15–20 MB
 # ─────────────────────────────────────────────────────────────────────────────
-FROM alpine:3.21 AS co2push
+FROM alpine:3.24.3@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a AS co2push
 
 RUN apk add --no-cache bash curl mosquitto-clients
 
